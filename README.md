@@ -1,0 +1,3 @@
+# Tutorial-for-data-poor-methods
+
+In data-poor situations length-based methods and surplus production models have been widely applied to understand the dynamics of marine stocks. In this study we evaluate the status of the southern European hake (*Merluccius merluccius*) stock, in the International Council for the Exploration of the Sea (ICES) divisions 27.8.c and 27.9.a, using the following methods: **(1)** the length-based indicators (**LBI**), **(2)** the length-based spawning potential ratio (**LBSPR**), **(3)** the mean length-based mortality estimators (**MLZ**), **(4)** stochastic surplus production model in continuous time  (**SPiCT**) and **(5)**  known biomass production model (**KBPM**).
