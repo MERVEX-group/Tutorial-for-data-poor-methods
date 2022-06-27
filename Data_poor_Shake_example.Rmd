@@ -1,0 +1,682 @@
+---
+title: "Implementing data poor methods for Southern hake"
+author: "Marta Cousido-Rocha, Santiago Cerviño and M. Grazia Pennino"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    number_sections: yes
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+dir=getwd()
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In data-poor situations length-based methods and surplus production models have been widely applied to understand the dynamics of marine stocks. In this study we evaluate the status of the southern European hake (*Merluccius merluccius*) stock, in the International Council for the Exploration of the Sea (ICES) divisions 27.8.c and 27.9.a, using the following methods: **(1)** the length-based indicators (**LBI**), **(2)** the length-based spawning potential ratio (**LBSPR**), **(3)** the mean length-based mortality estimators (**MLZ**), **(4)** stochastic surplus production model in continuous time  (**SPiCT**) and **(5)**  known biomass production model (**KBPM**).
+
+
+
+
+# Length Based Indicators (LBI)
+
+## Description
+
+A set of length-based indicators was selected for screening catch/landings–length composition and classify the stocks according to conservation/sustainability, yield optimization and Maximum Sustainable Yield (MSY) considerations. These indicators require data on the stock catch/landings–length composition and life-history parameters. The methodology was developed by WKLIFE V (2015), although it had already been previously defined by Froese (2004).
+
+Length-based indicators are calculated by year from length–frequency distributions. They are compared to appropriate reference points related to conservation, optimal yield and length distribution relative to expectations under MSY assumptions.
+
+
+It is one of the methods recommended by ICES to estimate MSY reference points for stocks of category 3 and 4 (ICES, 2018).   
+
+```{r Table1, warning=FALSE, message=FALSE, echo=FALSE}
+library(kableExtra)
+library(tidyverse)
+indicators_text <- data.frame(
+  Indicator = c("Lmax5%","L95%","Pmega","L25%","Lc","Lmean","Lmaxy","Lmean"), 
+  Calculation = c("Mean length of largest 5%", "95th percentile","Proportion of individuals above Lopt + 10%", "25th percentile of length distribution","Length at first catch (length at 50% of mode)", "Mean length of individuals > Lc", "Length class with maximum biomass in catch", "Mean length of individuals > Lc"),
+Reference = c ("Linf", "Linf","0.3-0.4","Lmat","Lmat", "Lopt = 2/3 Linf", "Lopt = 2/3 Linf *", "LF=M = (0.75Lc+0.25Linf)*"),
+IndicatorRatio = c("Lmax5% / Linf","L95% / Linf","Pmega","L25% / Lmat","Lc / Lmat","Lmean/Lopt","Lmaxy / Lopt","Lmean / LF=M"),
+ExpectedValue = c("> 0.8","> 0.8", "> 0.3","> 1","> 1","+- 1","+-1",">=1"),
+Property = c ("Conservation (large individuals)","","","Conservation (immatures)","", "Optimal yield", "", "MSY"))
+kable(indicators_text, escape=TRUE, caption = "Length-based indicators to assess the state of exploitation of stocks") %>%
+  kable_styling("striped", full_width = F,position = "center") %>%
+   row_spec(1:3, bold = F, background = "#F2F3F4") %>%
+   row_spec(4:5, bold = F, background ="yellow") %>%
+   row_spec(6:7, bold = F, background ="#00FFFF") %>%
+   row_spec(8, bold = F, background ="#7FFFD0") %>%
+   footnote(symbol= c ("assuming M/K=1.5"), symbol_manual
+="*")
+```
+
+For M/k != 1.5:
+
+$L_{opt} = 3*L_{inf}/(3+(M/k))$
+
+$L_{F=M} = (1-a)*L_c + a*L_{inf}$
+  a=1/(2*(M/k)+1)
+
+## Data required
+
+Information required includes length at maturity ($L_{mat}$, also denoted by $L_{50}$), von Bertalanffy growth parameters ($L_{inf}$), catch at length per year, length–weight relationship parameters ($a$ and $b$) or mean weights-at-length per year and ratio of natural mortality to von Bertalanffy growth rate ($M/k$).
+
+## Assumptions
+
+In order to interpret and discuss correctly the results provided by the LBI method is crucial to take into account that it assumes equilibrium conditions (total mortality and recruitment have been constant for a period as long as the years for which its length frequency distribution has been used to apply the method) and logistic selectivity curve (i.e. the curve is flat-topped not dome-shaped).
+
+
+## Loading and plotting data
+
+```{r, warning=FALSE, message=FALSE, echo=FALSE,include=FALSE}
+# Uncomment the following lines if necessary
+# require (rJava)
+# .jinit()
+# .jcall('java.lang.System','S','getProperty','java.version')
+# [1] "1.8.0_211"
+# devtools::install_github('davidgohel/ReporteRsjars')
+# devtools::install_github('davidgohel/ReporteRs')
+
+library(kableExtra)
+library(tidyverse)
+library(LBSPR) 
+library(reshape2)
+library(ggplot2) 
+library(tidyr)
+library(ReporteRs) 
+source("https://raw.githubusercontent.com/ices-tools-dev/LBIndicator_shiny/master/utilities.R") 
+source(paste(dir,"/Codes and data/utilities.R",sep="")) 
+```
+
+
+Loading catch at length per year:
+
+
+```{r}
+freq <- read.csv(paste(dir,"/Codes and data/LFDs.csv",sep=""), stringsAsFactors = FALSE)
+
+head(freq)
+tail(freq)
+
+```
+
+Loading mean weights-at-length per year:
+
+
+```{r}
+wal <- read.csv(paste(dir,"/Codes and data/weights.csv",sep=""), stringsAsFactors = FALSE)
+
+head(wal)
+tail(wal)
+```
+
+
+Length distributions over time must be unimodal.
+
+
+```{r}
+bin_plot(freq, 1, "cm")
+```
+
+## Life history parameters 
+
+* $L_{inf}$ is defined as the mean of the female and male values in the SS model.
+* $k$ is defined as the input value in the SS model.
+* $M$ is computed as the mean of the $M$ at age values for ages from 0 to 10 (from 10 onwards the population is very reduced).
+* $L_{50}$ is the estimated value using a bivariate Bayesian regression model based on female data (SS model input).
+
+```{r}
+Linf_F=110
+Linf_M=110*exp(-0.4)
+Linf=mean(c(Linf_F,Linf_M))
+Linf
+
+k=0.14
+
+L50=42.36
+
+# Read SS output for obtaining the estimated mortality at age.
+
+load(paste(dir,"/Codes and data/output_SS.RData",sep=""))
+
+M=output$Natural_Mortality_Bmark
+M=M[,-c(1:4,16:20)]
+M=mean(as.matrix(M))
+M
+```
+
+## Fit
+
+
+```{r,warning=FALSE}
+lb_tableSH(freq, 1, "cm", linf=Linf, lmat=L50, mk_ratio=M/k,wal)
+lb_plot(freq, 1, "cm", linf=Linf, lmat=L50, mk_ratio=M/k,wal)
+```
+
+
+
+## Bibliography
+
+
+Froese, R. (2004). Keep it simple: three indicators to deal with overfishing. Fish and Fisheries, 5 (1): 86-91.
+
+ICES (2015). Report of the Fifth Workshop on the Development of Quantitative Assessment Methodologies based on Life-history Traits, Exploitation Characteristics and other Relevant Parameters for Data-limited Stocks (WKLIFE V), 5-9 October 2015, Lisbon, Portugal. ICES CM 2015/ACOM:56.
+
+ICES (2018). ICES reference points for stocks in categories 3 and 4. ICES Technical Guidelines. Available at: <<http://ices.dk/sites/pub/Publication%20Reports/Guidelines%20and%20Policies/16.04.03.02_Category_3-4_Reference_Points.pdf>>
+
+
+
+# Length Based Spawning Potential Ratio (LBSPR)
+
+## Description
+
+What is Spawning Potential ratio (SPR)?
+- Spawning Potential ratio (SPR) is defined as the proportion of Spawning Biomass per recruit (SBPR) in an exploited stock with regards to SBPR in an unfished (virgin) stock. 
+- The rationale behind is that the abundance at length in the population decreases with ageing (length) because of the mortality (M and F). 
+- A virgin population will have a larger amount of large mature individuals than an exploited population. 
+- The SPR ranges between 1 (virgin population) and 0. 
+  - A SPR value between 0.35-0.4 leads usually to consider that the population is exploited at MSY level although this is a quite variable parameter. 
+  - A population with SPR value below 0.1-0.15 are considered collapsed.
+
+## Data required
+
+The LBSPR data requested are: 
+
+- A representative sample of the **size structure of the catch**.
+
+- An understanding of the **life history** of the species. The minimun information required by LBSPR is: maturity-at-size ($L_{50}$ and $L_{95}$, length at 50% and 95% of maturity, respectively), von Bertalanffy growth parameters ($L_{inf}$)  and ratio of natural mortality to von Bertalanffy growth rate ($M/k$).
+
+The LBSPR method does not require knowledge of the natural mortality rate (*M*), but instead uses the ratio of natural mortality and the von Bertalanffy growth coefficient (*k*) (*M*/*k*), which is believed to vary less across stocks and species than *M* (Prince et al. 2015).  
+
+## Assumptions
+
+The LBSPR method assumes that the length composition data is representative of the exploited population at steady state; the selectivity curve is logistic and that the method is equilibrium based (as the LBI method). It also assumes that length composition data comes from the dominant fleet, or that multiple fleets are combined into one composite, and catch-weighted aggregate length composition is derived. 
+
+## Life history parameters
+
+The values of $L_{inf}$, $M/k$ and $L_{50}$ has been defined previously (LBI Section), now we compute the $L_{95}$ estimate using our logit regression model.
+
+```{r}
+# Coefficients of the logit model
+cf=c(-11.242,0.265)
+# Function to compute percentiles
+lrPerc <- function(cf,p) (log(p/(1-p))-cf[1])/cf[2]
+L95=lrPerc(cf,0.95)
+L95
+Linf
+M/k
+L50
+```
+
+
+## Fit
+
+
+
+```{r,message=FALSE}
+Hke1Pars <- new("LB_pars")
+Hke1Pars@Linf <- Linf
+Hke1Pars@L50 <- L50
+Hke1Pars@L95 <- L95
+Hke1Pars@MK <- M/k
+Hke1Pars@L_units <- "cm"
+```
+
+```{r}
+HkeLenFreq1 <- new("LB_lengths", LB_pars=Hke1Pars, file=paste(dir,"/Codes and data/LFDs.csv",sep=""), dataType="freq", header=TRUE)
+HkeLenFreq1@L_units <- Hke1Pars@L_units
+LBSPR::plotSize(HkeLenFreq1)
+
+
+```
+
+
+```{r}
+Fit1 <- LBSPRfit(Hke1Pars, HkeLenFreq1, verbose = FALSE)
+plotEsts(Fit1)
+```
+
+
+## Bibliography
+
+
+Hordyk, A.R., Ono, K., Sainsbury, K.J., Loneragan, N., and Prince, J.D. (2015a). Some explorations of the life history ratios to describe length composition, spawning-per-recruit, and the spawning potential ratio. ICES J. Mar. Sci. 72: 204 - 216.
+
+Hordyk, A.R., Ono, K., Valencia, S.R., Loneragan, N.R., and Prince, J.D. (2015b). A novel length-based empirical estimation method of spawning potential ratio (SPR), and tests of its performance, for small-scale, data-poor fisheries. ICES J. Mar. Sci. 72: 217 – 231. 
+
+Hordyk, A.R., Loneragan, N.R., and Prince, J.D. (2015c). An evaluation of an iterative harvest strategy for data-poor fisheries using the length-based spawning potential ratio assessment methodology. Fish. Res. 171: 20– 32.
+
+Hordyk, A., Ono, K., Prince, J.D., and Walters, C.J. (2016). A simple length-structured model based on life history ratios and incorporating size-dependent selectivity: application to spawning potential ratios for data-poor stocks. Can. J. Fish. Aquat. Sci. 13: 1– 13. doi: 10.1139/cjfas-2015-0422.
+
+Prince, J.D., Hordyk, A.R., Valencia, S.R., Loneragan, N.R., and Sainsbury, K.J. (2015). Revisiting the concept of Beverton–Holt life-history invariants with the aim of informing data-poor fisheries assessment. ICES J. Mar. Sci. 72: 194 - 203.
+
+
+
+# Mean length-based mortality estimators (MLZ)
+
+
+
+## Description 
+
+The mean length of animals that are fully vulnerable to the sampling gear can be used to estimate total mortality from basic growth parameters and a known length at first capture. This approach may in some cases represent the best opportunity to reconstruct the mortality history of a stock.
+
+In this study we focus on applied the MLZ method proposed by Then (2018). Previous methods are also described below for context purposes. 
+
+- **Beverton-Holt length-based mortality estimator** is widely used in data-limited fish stock assessment, however, the method requires equilibrium conditions. It assumes equilibrium length composition such that the mean
+length reflects the current $Z$ rate experienced by the stock.
+
+- **Gedamke and Hoenig (2006)** modified the Beverton and Holt
+estimator by relaxing the strict assumption of equilibrium population. This
+was done by modelling the transition of mean length from one
+equilibrium period to the next one, following step-wise changes in Z.
+Using a time series of mean length observations, the Gedamke-
+Hoenig estimator yields **period-specific estimates of Z and the
+corresponding years of change in mortality**. 
+
+- **Then et al. (2018)** developed a new formulation of the Gedamke-Hoenig estimator that utilizes **additional information from a time-series of fishing effort** to estimate the catchability coefficient $q$ and the natural mortality rate $M$ and thus  **year-specific total and fishing mortality rates**. 
+
+## Assumptions
+
+Then et al. (2018) method assumes constant fishery recruitment and  knife-edge selection of
+lengths (flat topped selectivity curve) by the fishery gear. Other model assumptions include:
+mean length at age known and constant over time; no individual variability in growth; natural mortality $M$ independent of stock size and constant
+with age and over time, and constant catchability $q$ over time and over age for all ages $\geq t_c$ being $t_c$ is the age at which animals are fully vulnerable to
+the fishery and to the sampling gear.
+
+
+## Data required
+
+Time-series of length measurements, von Bertalanffy growth parameters $L_{\infty}$ and $k$ for the stock, time-series of fishing effort and the so-called
+length of first capture ($L_c$, i.e., the smallest size
+at which animals are fully vulnerable to the fishery and
+to the sampling gear). The effort time-series can be derived as the ratio of the catch and a CPUE series. 
+Additionally to the above data and input parameters, guesses for the maximum age, catchability coefficient and natural mortality rate must be specified.
+
+## Preparing data
+
+### Load packages and useful functions
+
+
+```{r,message=FALSE,include=FALSE}
+library(fishmethods)
+library(dplyr)
+library(lattice)
+library(data.table)
+library(reshape2)
+
+# Modification for discrete (annual) reproduction
+source(paste(dir,"/Codes and data/gedamke.hoenig_BFGS_discrete.r",sep=""))
+# THoG model
+source(paste(dir,"/Codes and data/mleneffort.r",sep=""))
+# YPR estimator
+source(paste(dir,"/Codes and data/ypr_ml.r",sep=""))
+
+# Function to calculate mean lengths
+neph_Lbar <- function(input, Lc){
+  sub <- subset(input, Length >= Lc & !(value==0))
+  sub <- data.table(sub)
+  fin <- sub[, list(
+    mlen = sum(value * Length) / sum(value),
+    ss_bins = length(value),
+    ss = 1
+  ),
+  by = list(Year)]
+  fin$Year <- as.numeric(fin$Year)
+  out <- fin
+}
+```
+
+### Read data
+
+Introduce stock name and max age.
+
+```{r}
+name <- "Southern hake"
+sex <- "Both"
+max_age <- 12
+
+```
+
+```{r,message=FALSE}
+# LFDs
+input_lenfreq <- read.csv(paste(dir,"/Codes and data/LFDs.csv",sep=""))
+colnames(input_lenfreq)[1] <- "Length"
+
+# Defining effort:
+
+# Indices (surveys and CPUEs)
+input_effort <-read.csv(paste(dir,"/Codes and data/indices 1982-2021.csv",sep=""))
+
+# Use catches and CPUE (spanish one) to define effort time series
+input_effort=subset(input_effort,input_effort$index=="SpCPUE_trawlers")
+input_effort=subset(input_effort,input_effort$year>=2010)
+
+# Catches
+input_catches<-read.csv(paste(dir,"/Codes and data/Tab10.6_init.csv",sep=""))
+# Cut years
+input_catches=subset(input_catches,input_catches$years>=2010)
+
+
+effort=input_catches$catch/input_effort$obs
+input_effort=cbind(input_effort$year,effort)
+colnames(input_effort) <-c("Year", "effort")
+
+
+input_melt <- reshape2::melt(input_lenfreq, id.vars="Length", variable.name="Year")
+input_melt$Year <- as.numeric(substr(input_melt$Year, 2, 5))
+
+head(input_lenfreq)
+tail(input_lenfreq)
+
+input_effort
+```
+
+
+
+### Histograms and definition of length of full selectivity ($L_c$)
+
+
+```{r}
+stockname <- paste(name, sex)
+
+par(mfrow=c(1, 1))
+input_tot <- rowSums(input_lenfreq[, -1])
+input_lengths <- input_lenfreq[,1]
+
+Lc <- input_lengths[which.max(input_tot)] ; Lc
+barplot(input_tot, names.arg=input_lengths, 
+        main=paste(stockname, "Length Frequency Distribution \nPeak=", Lc))
+```
+
+
+
+### Calculate annual mean lengths of animals of lengths larger than $L_c$ 
+
+```{r}
+ml_gh <- neph_Lbar(input=input_melt, Lc=Lc)
+ml_gh
+```
+
+
+
+
+## Fit
+
+Note that the initial value of $q$ have been fixed as: 0.6/mean(effort), where 0.6 is a guess for the fishing mortality and mean(effort) is the mean of the time series of effort.
+
+```{r}
+ml_thog <- left_join(as.data.frame(input_effort), 
+                     (ml_gh), 
+                     by = "Year")
+ml_thog$ss_bins[is.na(ml_thog$ss_bins)] <- 0
+ml_thog$ss[is.na(ml_thog$ss)] <- 0
+q0=0.6/mean(ml_thog$effort)
+
+```
+
+
+Below we fir the model fixing $M$,  
+$M$ can be also estimated if you change to "T" the argument est.M.
+
+
+```{r}
+a=mlen_effort(year = ml_thog$Year,
+            mlen = ml_thog$mlen,
+            effort = ml_thog$effort, 
+            ss = ml_thog$ss,
+            K = k,
+            Linf = Linf, 
+            Lc = Lc, 
+            n_cohort = 1,
+            n_age = max_age, 
+            init_effort = rep(ml_thog$effort[1], max_age),
+            stq = c(q0),
+            stM = c(M), est.M = F,graph = FALSE)
+
+a
+```
+
+
+```{r}
+
+year=2010:2021
+plot(year, a$results$F, xlab = "Year", ylab = "Fishing Mortality (F)",
+         typ = "o", pch = 16, col = "black",ylim=c(0,max(a$results$F)))
+```
+
+
+## References
+
+Gedamke, T., and Hoenig,  J.M. (2006). Estimating Mortality from Mean Length Data in Non-equilibrium Situations, with Application to the Assessment of Goosefish. Trans. Amer. Fish. Soc., 135:476–487.
+
+
+Then, A.Y., Hoenig, J.M., and Huynh, Q.C. (2018). ``Estimating fishing and natural mortality rates, and catchability coefficient, from a series of observations on mean length and fishing effort''. VIMS Articles. 749.
+https://scholarworks.wm.edu/vimsarticles/749
+
+
+# Stochastic surplus production model in continuous time (SPiCT)
+
+## Description
+
+SPiCT explicitly models both biomass and fishing dynamics as stochastic processes in a state-space framework. It is formulated as a continuous time model to allow a representation of seasonal fishing behaviour and incorporation of sub-annual catch and index data (see Pedersen and Berg, 2017).  
+
+One of the most important inputs for fitting SPiCT is the catch biomass time series (by weight). Additionally, SPiCT requires at least a biomass index to calibrate the population biomass and estimate the model parameters. An important advantage of SPiCT is that it allows the use of multiple biomass indices with different time-series in addition to the catch time series as we can see below.
+
+## Load packages
+
+```{r,warning=FALSE,message=FALSE}
+# Uncomment lines if necessary:
+# remotes::install_github("tokami/spict/spict", ref="fix130")
+# install_github("DTUAqua/spict/spict")  
+library(spict)
+library(readxl)
+```
+
+
+## Prepare input data
+
+Loading catches and relative biomass indices.
+
+```{r,warning=FALSE}
+
+# Catches
+input_catches<-read.csv(paste(dir,"/Codes and data/Tab10.6_init.csv",sep=""))
+# Cut years
+input_catches=subset(input_catches,input_catches$years>=1982)
+
+# Indices
+
+input_ind <-read.csv(paste(dir,"/Codes and data/indices 1982-2021.csv",sep=""))
+
+I_P=subset(input_ind,input_ind$index=="PtGFS")
+I_S=subset(input_ind,input_ind$index=="SpGFS")
+ind_SpCPUE_trawlers=subset(input_ind,input_ind$index=="SpCPUE_trawlers")
+ind_SpCPUE_volpal=subset(input_ind,input_ind$index=="SpCPUE_volpal")
+
+
+years_cat=input_catches$years
+
+len_cat=length(years_cat)
+
+inp1 <- list(timeC = years_cat, obsC = input_catches$catch,
+            timeI = list(
+                         I_P$year+0.86, 
+                         I_S$year+0.86,
+                         ind_SpCPUE_trawlers$year+0.5,
+                         ind_SpCPUE_volpal$year+0.5
+                         ),
+            obsI = list( 
+                        I_P$obs,
+                        I_S$obs,
+                        ind_SpCPUE_trawlers$obs,
+                        ind_SpCPUE_volpal$obs
+                         ))
+
+inp1=check.inp(inp1)
+
+```
+
+The data can be plotted using the command:
+
+```{r,warning=FALSE,fig.height=5}
+source(paste(dir,"/Codes and data/functions.R",sep=""))
+source(paste(dir,"/Codes and data/plotting.R",sep=""))
+par(mfrow=c(3,2))
+plotspict.data.adp(inp1)
+c("PtSurv","SpSurv","SpCPUE_trawlers","SpCPUE_volpal")
+
+```
+
+## Fit
+
+The model is fitted to data by running:
+```{r,warning=FALSE}
+res1 <- fit.spict(inp1)
+```
+
+The results are summarized using:
+
+
+```{r,warning=FALSE}
+capture.output(summary(res1))
+plot(res1,CI = 0.9)
+```
+
+```{r,warning=FALSE,eval=FALSE, include=FALSE}
+par(mfcol=c(1,2))
+plotspict.biomass(res1)
+plotspict.bbmsy(res1)
+plotspict.f(res1)
+plotspict.ffmsy(res1, main='', qlegend=FALSE)
+plotspict.catch(res1)
+plotspict.fb(res1)
+```
+
+
+```{r,warning=FALSE}
+par(mfcol=c(1,1))
+plotspict.production(res1)
+```
+
+
+
+**Checklist for the acceptance of a SPiCT assessment** 
+  
+  
+```{r,warning=FALSE}
+res1$opt$convergence 
+```
+
+```{r,warning=FALSE}
+all(is.finite(res1$sd))  
+```
+
+```{r,warning=FALSE}
+r1 <- calc.osa.resid(res1)
+plotspict.diagnostic(r1,lag.max =8)
+```
+
+```{r,warning=FALSE}
+r1<- res1
+rep1=retro(r1, nretroyear=5)
+plotspict.retro(rep1)
+```
+
+
+```{r,warning=FALSE}
+set.seed(1234)
+a=check.ini(inp1, ntrials=5,verbose = FALSE)
+a$check.ini$resmat
+```
+
+Confidence intervals of $F/F_{msy}$ and $B/B_{msy}$ estimates.
+
+```{r,warning=FALSE}
+fit=res1
+
+get.par("logFmFmsy", fit, exp=TRUE, CI = 0.9)
+get.par("logBmBmsy", fit, exp=TRUE, CI = 0.9)
+```
+
+AIC value:
+  
+```{r,warning=FALSE}
+get.AIC(res1)
+```
+
+## References
+
+Pedersen, M.W. and Berg, C.W. (2017), A stochastic surplus production model in continuous time. Fish Fish, 18: 226-243. https://doi.org/10.1111/faf.12174
+
+
+
+
+# Known biomass production model (KBPM)
+
+## Description
+
+An alternative line of research based on surplus production models named known-biomass production models (KBPM) was developed (MacCall, 2002) based on the idea that the annual surplus production in an unfished stock is equal to *B<sub>t+1</sub>-B<sub>t*, and that, for a fished stock, the calculation of surplus production depends on catch. 
+
+In contrast to the traditional SPMs, KBPMs use as input data a biomass time series produced by other stock assessment model instead of biomass index and thereby avoid the imprecision associated with estimating the catchability coefficient. Deep explanations can be found in the knobi package vignette. 
+
+## Load package
+
+```{r,warning=FALSE,message=FALSE}
+# Uncomment lines if necessary:
+# remotes::install_github("MERVEX-group/knobi")
+library(knobi)
+```
+
+
+## Prepare input data
+
+Loading data and control lists.
+
+```{r,warning=FALSE}
+# Same dataset as in "spict"
+Database=input_catches
+
+# We take the SSB, catches and years data series from our Database
+data<-list()
+data$Spawning_Biomass=Database$ssb_val
+data$Catches=Database$catch 
+data$years=Database$years
+
+# Now we define the control list.
+control=list()
+control$pella="TRUE" # Logical. TRUE means that Pella-Tomlinson model is used.
+                     # FALSE means that Schaefer model is employed.
+control$method="SSB" # Information for the fit: "SSB" or "Biomass".
+```
+
+## Fit
+
+Finally, we can fit the model
+
+```{r,warning=FALSE}
+knobi_results<-knobi_fit(data,control)
+```
+
+The quantitative results are shown in:
+
+```{r,warning=FALSE}
+knobi_results$fit
+```
+
+
+**Checklist for the acceptance of a KBPM assessment** 
+  
+It is possible to make a retrospective analysis
+  
+```{r,warning=FALSE}
+knobi_retrospectives<-knobi_retro(knobi_results,nR=5)
+knobi_retrospectives
+```
+
+## References
+
+MacCall, Alec. (2002). Use of Known-Biomass Production Models to Determine Productivity of West Coast Groundfish Stocks. North American Journal of Fisheries Management. 22. 272-279. DOI: 10.1577/1548-8675%282002%29022%3C0272%3AUOKBPM%3E2.0.CO%3B2. 
